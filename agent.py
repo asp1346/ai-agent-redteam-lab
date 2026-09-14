@@ -1,6 +1,7 @@
 #Main agent file
 
 import anthropic
+import sys
 from dotenv import load_dotenv
 load_dotenv()  # Load environment variables from .env file
 
@@ -41,12 +42,19 @@ while True:
 
     #Keep talking to Claude until it gives a real answer, not just a tool request
     while True:
-        response = client.messages.create(
-            model="claude-sonnet-5",
-            max_tokens=1024,
-            messages=messages,
-            tools=[weather_tool]
-        )
+        try:
+            response = client.messages.create(
+                model="claude-sonnet-5",
+                max_tokens=1024,
+                messages=messages,
+                tools=[weather_tool]
+            )
+        except anthropic.AuthenticationError:
+            print("Authentication failed. Please check your ANTHROPIC_API_KEY in the .env file.")
+            sys.exit(1)
+        except (anthropic.APIStatusError, anthropic.APIConnectionError) as e:
+            print(f"Something went wrong while talking with Claude: {e}")
+            break  # Exit the inner loop and wait for user input again
 
         messages.append({"role": "assistant", "content": response.content})  # Append assistant response to messages list
 
