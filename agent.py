@@ -21,10 +21,44 @@ weather_tool = {
     }
 }
 
+time_tool = {
+    "name": "get_time",
+    "description": "Get the current time.",
+    "input_schema": {
+        "type": "object",
+        "properties": {},
+        "required": []
+    }
+}
+
+read_file_tool = {
+    "name": "read_file",
+    "description": "Read the contents of a file.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "Path to the file to read."}
+        },
+        "required": ["path"]
+    }
+}
+
 def get_weather(location):
     # Placeholder function to simulate getting weather data
     # In a real implementation, you would call a weather API here
     return f"The current weather in {location} is sunny with a temperature of 73°F."
+
+def get_time():
+    from datetime import datetime
+    current_time=datetime.now()
+    return f"The current time is {current_time}."
+
+def read_file(path):
+    try:
+        with open(path, "r") as f:
+            return f.read()
+    except FileNotFoundError:
+        return "File not found."
 
 while True:
     entry = input("Enter message: ")
@@ -47,7 +81,7 @@ while True:
                 model="claude-sonnet-5",
                 max_tokens=1024,
                 messages=messages,
-                tools=[weather_tool]
+                tools=[weather_tool, time_tool, read_file_tool]
             )
         except anthropic.AuthenticationError:
             print("Authentication failed. Please check your ANTHROPIC_API_KEY in the .env file.")
@@ -66,7 +100,7 @@ while True:
         if response.stop_reason != "tool_use":
             break  # Claude gave a final answer - go back to waiting for user input
 
-        #Resolve every tool call in this response, then send all results back in one message
+        #Find every tool call in this response, then send all results back in one message
         tool_results = []
         for block in response.content:
             if block.type == "tool_use":
@@ -76,6 +110,12 @@ while True:
 
                 if tool_name == "get_weather":
                     result = get_weather(tool_input["location"])
+
+                elif tool_name == "get_time":
+                    result = get_time()
+
+                elif tool_name == "read_file":
+                    result = read_file(tool_input["path"])
 
                 tool_results.append({
                     "type": "tool_result",
