@@ -9,5 +9,9 @@ Anthropic API.
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
-export ANTHROPIC_API_KEY=sk-ant-...
+echo "ANTHROPIC_API_KEY=sk-ant-..." > .env
+python agent.py
 ```
+
+`agent.py` loads the API key from `.env` via `python-dotenv`. `.env` is
+gitignored, so the key never gets committed.
