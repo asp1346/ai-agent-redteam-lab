@@ -1,7 +1,12 @@
 #Main agent file
 
 import anthropic
+import json
 import sys
+import time
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
 from dotenv import load_dotenv
 load_dotenv()  # Load environment variables from .env file
 
@@ -49,7 +54,6 @@ def get_weather(location):
     return f"The current weather in {location} is sunny with a temperature of 73°F."
 
 def get_time():
-    from datetime import datetime
     current_time=datetime.now()
     return f"The current time is {current_time}."
 
@@ -65,6 +69,22 @@ def read_file(path):
         return contents[:MAX_FILE_CHARS] + f"\n\n[Truncated: file is longer than {MAX_FILE_CHARS} characters]"
     return contents
 
+AUDIT_LOG_PATH = Path(__file__).parent / "audit_log.jsonl"  # Next to agent.py, no matter where you run it from
+SESSION_ID = uuid.uuid4().hex[:8]  # Random ID shared by every log line from one run of the agent
+LOG_PREVIEW_CHARS = 200  # How much of each tool result gets copied into the log
+
+def log_event(event, **fields):
+    # One JSON object per line (JSONL): append-only, and each line can be parsed on its own
+    entry = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "session_id": SESSION_ID,
+        "event": event,
+        **fields
+    }
+    # Open in append mode on every call so each line is on disk right away, even if the agent crashes later
+    with open(AUDIT_LOG_PATH, "a", encoding="utf-8") as f:
+        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
 def main():
     while True:
         entry = input("Enter message: ")
@@ -79,6 +99,7 @@ def main():
             break
 
         messages.append({"role": "user", "content": entry})  # Append user message to messages list
+        log_event("user_message", content=entry)
 
         #Keep talking to Claude until it gives a real answer, not just a tool request
         while True:
@@ -94,14 +115,19 @@ def main():
                 sys.exit(1)
             except (anthropic.APIStatusError, anthropic.APIConnectionError) as e:
                 print(f"Something went wrong while talking with Claude: {e}")
+                log_event("api_error", error_type=type(e).__name__, error=str(e))
                 break  # Exit the inner loop and wait for user input again
 
             messages.append({"role": "assistant", "content": response.content})  # Append assistant response to messages list
 
             #Skip thinking blocks and print only the text response from the model
+            reply_text = []
             for block in response.content:
                 if block.type == "text":
                     print(block.text)  # Print the response from the model
+                    reply_text.append(block.text)
+
+            log_event("assistant_message", text="\n".join(reply_text), stop_reason=response.stop_reason)
 
             if response.stop_reason != "tool_use":
                 break  # Claude gave a final answer - go back to waiting for user input
@@ -115,6 +141,7 @@ def main():
                     tool_input = block.input
                     tool_use_id = block.id
                     is_error = False  # Reset for every tool call so one failure doesn't mark the others as errors
+                    start_time = time.perf_counter()
 
                     #Any exception a tool raises becomes an error result for Claude instead of crashing the program
                     try:
@@ -135,6 +162,17 @@ def main():
                         is_error = True
                         result = f"Error: {type(e).__name__}: {e}"
 
+                    log_event(
+                        "tool_call",
+                        tool_use_id=tool_use_id,
+                        tool_name=tool_name,
+                        tool_input=tool_input,
+                        is_error=is_error,
+                        duration_ms=round((time.perf_counter() - start_time) * 1000, 1),
+                        result_length=len(result),
+                        result_preview=result[:LOG_PREVIEW_CHARS]
+                    )
+
                     tool_results.append({
                         "type": "tool_result",
                         "tool_use_id": tool_use_id,
@@ -146,3 +184,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
