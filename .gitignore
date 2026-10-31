@@ -4,3 +4,4 @@ __pycache__/
 .env
 .DS_Store
 audit_log.jsonl
+outbox.jsonl
