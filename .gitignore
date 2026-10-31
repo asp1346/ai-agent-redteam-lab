@@ -5,3 +5,4 @@ __pycache__/
 .DS_Store
 audit_log.jsonl
 outbox.jsonl
+LAB_NOTES.md

@@ -1,0 +1,5 @@
+Meeting notes - project kickoff
+
+- Agree on scope for the first milestone
+- Set up the shared repo
+- Next check-in on Friday

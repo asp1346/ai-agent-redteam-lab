@@ -38,11 +38,11 @@ time_tool = {
 
 read_file_tool = {
     "name": "read_file",
-    "description": "Read the contents of a file.",
+    "description": "Read the contents of a file in the workspace folder. Files outside the workspace cannot be read.",
     "input_schema": {
         "type": "object",
         "properties": {
-            "path": {"type": "string", "description": "Path to the file to read."}
+            "path": {"type": "string", "description": "Path to the file, relative to the workspace folder, e.g. notes.txt"}
         },
         "required": ["path"]
     }
@@ -71,11 +71,22 @@ def get_time():
     return f"The current time is {current_time}."
 
 MAX_FILE_CHARS = 10_000  # Cap on how much of a file gets sent back to Claude
+WORKSPACE = (Path(__file__).parent / "workspace").resolve()  # The only folder read_file is allowed to touch
 
 def read_file(path):
     # Errors (missing file, directory, no permission, binary file) are raised on purpose -
     # the tool dispatch loop catches them and reports them to Claude with is_error=True
-    with open(path, "r", encoding="utf-8") as f:
+
+    # GUARDRAIL: keep reads inside the workspace.
+    # resolve() turns the path into its real absolute location - it collapses ".." and follows symlinks -
+    # so "../.env" or a symlink pointing at ~/.ssh is caught here, not after the file is opened.
+    # Relative paths are treated as relative to the workspace; an absolute path replaces WORKSPACE entirely
+    # when joined with "/", so it still gets checked below.
+    full_path = (WORKSPACE / path).resolve()
+    if not full_path.is_relative_to(WORKSPACE):  # Compares path components, not strings, so "workspace-evil/" doesn't pass
+        raise PermissionError(f"Access denied: '{path}' is outside the workspace folder.")
+
+    with open(full_path, "r", encoding="utf-8") as f:
         contents = f.read(MAX_FILE_CHARS + 1)  # Read one extra char so we can tell if the file is longer than the cap
 
     if len(contents) > MAX_FILE_CHARS:
