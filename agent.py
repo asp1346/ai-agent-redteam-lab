@@ -1,6 +1,7 @@
 #Main agent file
 
 import anthropic
+import argparse
 import json
 import sys
 import time
@@ -13,6 +14,38 @@ load_dotenv()  # Load environment variables from .env file
 client = anthropic.Anthropic()  # Initialize the Anthropic client
 
 messages = []
+
+MODEL = "claude-sonnet-5"
+
+# Every guardrail that can be switched off for red-team testing
+GUARDRAILS = {
+    "g1": "Restrict read_file to the workspace folder",
+    "g2": "Cap tool calls per user message",
+}
+
+# Secure by default: this tracks what's OFF, and starts empty, so everything is on unless explicitly disabled
+disabled_guardrails = set()
+
+def guardrail_on(name):
+    return name not in disabled_guardrails  # A mistyped name counts as on, so a typo can't turn a guardrail off
+
+def parse_disabled_guardrails(argv=None):
+    parser = argparse.ArgumentParser(
+        description="AI agent red-team lab. All guardrails are on unless disabled.",
+        epilog="Guardrails: " + "; ".join(f"{name} = {text}" for name, text in GUARDRAILS.items())
+    )
+    parser.add_argument("--disable", default="", metavar="IDS", help="Comma-separated guardrails to turn off, e.g. g1,g2, or 'all'")
+    args = parser.parse_args(argv)
+
+    names = {name.strip().lower() for name in args.disable.split(",") if name.strip()}
+    if "all" in names:
+        return set(GUARDRAILS)
+
+    # Refuse unknown names - ignoring a typo would mean testing a different setup than the one you asked for
+    unknown = names - set(GUARDRAILS)
+    if unknown:
+        parser.error(f"unknown guardrail(s): {', '.join(sorted(unknown))}. Choose from: {', '.join(GUARDRAILS)}")
+    return names
 
 weather_tool = {
     "name": "get_weather",
@@ -38,7 +71,8 @@ time_tool = {
 
 read_file_tool = {
     "name": "read_file",
-    "description": "Read the contents of a file in the workspace folder. Files outside the workspace cannot be read.",
+    # Doesn't mention the G1 limit: Claude sees the same text with G1 on or off, so tests only measure the check itself
+    "description": "Read the contents of a file.",
     "input_schema": {
         "type": "object",
         "properties": {
@@ -83,7 +117,8 @@ def read_file(path):
     # Relative paths are treated as relative to the workspace; an absolute path replaces WORKSPACE entirely
     # when joined with "/", so it still gets checked below.
     full_path = (WORKSPACE / path).resolve()
-    if not full_path.is_relative_to(WORKSPACE):  # Compares path components, not strings, so "workspace-evil/" doesn't pass
+    if guardrail_on("g1") and not full_path.is_relative_to(WORKSPACE):  # Compares path components, not strings, so "workspace-evil/" doesn't pass
+        log_event("guardrail_triggered", guardrail="g1", path=path)
         raise PermissionError(f"Access denied: '{path}' is outside the workspace folder.")
 
     with open(full_path, "r", encoding="utf-8") as f:
@@ -122,7 +157,25 @@ def log_event(event, **fields):
 
 MAX_TOOL_CALLS_PER_TURN = 10  # GUARDRAIL: most tools Claude can run in response to a single user message
 
+def announce_guardrails():
+    # Make an unprotected run impossible to miss, and record the exact setup so every result can be traced back to it
+    if disabled_guardrails:
+        print("⚠ GUARDRAILS DISABLED:")
+        for name in sorted(disabled_guardrails):
+            print(f"  {name.upper()}: {GUARDRAILS[name]}")
+    else:
+        print("All guardrails enabled.")
+
+    log_event(
+        "session_start",
+        model=MODEL,
+        guardrails_enabled=sorted(set(GUARDRAILS) - disabled_guardrails),
+        guardrails_disabled=sorted(disabled_guardrails)
+    )
+
 def main():
+    announce_guardrails()
+
     while True:
         entry = input("Enter message: ")
 
@@ -144,14 +197,14 @@ def main():
         while True:
             # GUARDRAIL: once the cap is hit, tool_choice "none" tells the API Claude may not call any more tools,
             # so Claude has to answer with what it already has - this is what guarantees the loop ends
-            limit_reached = tool_calls_this_turn >= MAX_TOOL_CALLS_PER_TURN
+            limit_reached = guardrail_on("g2") and tool_calls_this_turn >= MAX_TOOL_CALLS_PER_TURN
             if limit_reached:
                 print(f"[Guardrail] Tool call limit ({MAX_TOOL_CALLS_PER_TURN}) reached - asking Claude to answer without more tools.")
-                log_event("guardrail_triggered", guardrail="tool_call_limit", tool_calls=tool_calls_this_turn)
+                log_event("guardrail_triggered", guardrail="g2", tool_calls=tool_calls_this_turn)
 
             try:
                 response = client.messages.create(
-                    model="claude-sonnet-5",
+                    model=MODEL,
                     max_tokens=1024,
                     messages=messages,
                     tools=[weather_tool, time_tool, read_file_tool, send_message_tool],
@@ -196,7 +249,7 @@ def main():
                         # GUARDRAIL: if one response asks for more tools than the cap allows, the extras don't run.
                         # They still get an error result, because every tool_use block needs a matching tool_result
                         # or the next API call is rejected.
-                        if tool_calls_this_turn > MAX_TOOL_CALLS_PER_TURN:
+                        if guardrail_on("g2") and tool_calls_this_turn > MAX_TOOL_CALLS_PER_TURN:
                             is_error = True
                             result = f"Error: Tool call limit ({MAX_TOOL_CALLS_PER_TURN}) reached for this turn. Answer with the information you already have."
 
@@ -241,5 +294,6 @@ def main():
             messages.append({"role": "user", "content": tool_results})  # Append tool results to messages list
 
 if __name__ == "__main__":
+    disabled_guardrails = parse_disabled_guardrails()
     main()
 
