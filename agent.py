@@ -3,6 +3,7 @@
 import anthropic
 import argparse
 import json
+import os
 import sys
 import time
 import uuid
@@ -176,6 +177,12 @@ def announce_guardrails():
 def main():
     announce_guardrails()
 
+    # Stop here if there's no key - otherwise the SDK crashes with a stack trace on the first message
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        print("No API key found. Start the agent with ./run.sh, or set ANTHROPIC_API_KEY yourself. See the README for setup.")
+        log_event("api_error", error_type="MissingAPIKey", error="ANTHROPIC_API_KEY is not set")
+        sys.exit(1)
+
     while True:
         entry = input("Enter message: ")
 
@@ -210,8 +217,9 @@ def main():
                     tools=[weather_tool, time_tool, read_file_tool, send_message_tool],
                     tool_choice={"type": "none"} if limit_reached else {"type": "auto"}
                 )
-            except anthropic.AuthenticationError:
-                print("Authentication failed. Please check your ANTHROPIC_API_KEY in the .env file.")
+            except anthropic.AuthenticationError as e:
+                print("Authentication failed: Anthropic rejected the API key. It may be wrong, revoked or expired.")
+                log_event("api_error", error_type=type(e).__name__, error=str(e))
                 sys.exit(1)
             except (anthropic.APIStatusError, anthropic.APIConnectionError) as e:
                 print(f"Something went wrong while talking with Claude: {e}")
