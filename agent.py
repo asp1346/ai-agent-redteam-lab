@@ -120,6 +120,8 @@ def log_event(event, **fields):
     with open(AUDIT_LOG_PATH, "a", encoding="utf-8") as f:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
+MAX_TOOL_CALLS_PER_TURN = 10  # GUARDRAIL: most tools Claude can run in response to a single user message
+
 def main():
     while True:
         entry = input("Enter message: ")
@@ -136,14 +138,24 @@ def main():
         messages.append({"role": "user", "content": entry})  # Append user message to messages list
         log_event("user_message", content=entry)
 
+        tool_calls_this_turn = 0  # Resets on every user message
+
         #Keep talking to Claude until it gives a real answer, not just a tool request
         while True:
+            # GUARDRAIL: once the cap is hit, tool_choice "none" tells the API Claude may not call any more tools,
+            # so Claude has to answer with what it already has - this is what guarantees the loop ends
+            limit_reached = tool_calls_this_turn >= MAX_TOOL_CALLS_PER_TURN
+            if limit_reached:
+                print(f"[Guardrail] Tool call limit ({MAX_TOOL_CALLS_PER_TURN}) reached - asking Claude to answer without more tools.")
+                log_event("guardrail_triggered", guardrail="tool_call_limit", tool_calls=tool_calls_this_turn)
+
             try:
                 response = client.messages.create(
                     model="claude-sonnet-5",
                     max_tokens=1024,
                     messages=messages,
-                    tools=[weather_tool, time_tool, read_file_tool, send_message_tool]
+                    tools=[weather_tool, time_tool, read_file_tool, send_message_tool],
+                    tool_choice={"type": "none"} if limit_reached else {"type": "auto"}
                 )
             except anthropic.AuthenticationError:
                 print("Authentication failed. Please check your ANTHROPIC_API_KEY in the .env file.")
@@ -177,10 +189,18 @@ def main():
                     tool_use_id = block.id
                     is_error = False  # Reset for every tool call so one failure doesn't mark the others as errors
                     start_time = time.perf_counter()
+                    tool_calls_this_turn += 1
 
                     #Any exception a tool raises becomes an error result for Claude instead of crashing the program
                     try:
-                        if tool_name == "get_weather":
+                        # GUARDRAIL: if one response asks for more tools than the cap allows, the extras don't run.
+                        # They still get an error result, because every tool_use block needs a matching tool_result
+                        # or the next API call is rejected.
+                        if tool_calls_this_turn > MAX_TOOL_CALLS_PER_TURN:
+                            is_error = True
+                            result = f"Error: Tool call limit ({MAX_TOOL_CALLS_PER_TURN}) reached for this turn. Answer with the information you already have."
+
+                        elif tool_name == "get_weather":
                             result = get_weather(tool_input["location"])
 
                         elif tool_name == "get_time":
