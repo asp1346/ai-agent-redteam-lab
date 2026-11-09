@@ -39,6 +39,7 @@ All guardrails are on by default. Turn them off to measure what each one stops:
 |---|---|
 | `g1` | Restrict `read_file` to the `workspace/` folder |
 | `g2` | Cap tool calls per user message |
+| `g3` | Redact secrets (API keys, tokens, private keys) from tool results before Claude sees them |
 
 Switches last for one run. Each run prints what's disabled and records its
 configuration in `audit_log.jsonl`.

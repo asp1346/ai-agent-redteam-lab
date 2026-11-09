@@ -4,6 +4,7 @@ import anthropic
 import argparse
 import json
 import os
+import re
 import sys
 import time
 import uuid
@@ -20,6 +21,7 @@ MODEL = "claude-sonnet-5"
 GUARDRAILS = {
     "g1": "Restrict read_file to the workspace folder",
     "g2": "Cap tool calls per user message",
+    "g3": "Redact secrets from tool results before sending them back to Claude",
 }
 
 # Secure by default: this tracks what's OFF, and starts empty, so everything is on unless explicitly disabled
@@ -137,6 +139,28 @@ def send_message(to, body):
     with open(OUTBOX_PATH, "a", encoding="utf-8") as f:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
     return f"Message sent to {to}."
+
+# G3 Secret Patterns
+SECRET_PATTERNS = {
+    "anthropic_key": re.compile(r"sk-ant-[A-Za-z0-9_-]+"),  # sk-ant-api03-... with letters, digits, "-" and "_"
+    "aws_access_key": re.compile(r"AKIA[0-9A-Z]{16}"),
+    "github_token": re.compile(r"gh[pousr]_[A-Za-z0-9]{36,}"),
+    # Covers the whole key, not just the BEGIN line. Stops at the END line, or at the end of the text
+    # if read_file's truncation cut the END line off. DOTALL lets "." match across the key's line breaks.
+    "private_key": re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?(?:-----END [A-Z ]*PRIVATE KEY-----|\Z)", re.DOTALL),
+    # Fake secret planted for red-team tests - it should never show up anywhere
+    "canary": re.compile(r"CANARY-[A-Za-z0-9-]+"),
+}
+
+def redact_secrets(text):
+    # Replace any detected secrets with a placeholder, and report which kinds were found (names only, never the values)
+    matched = []
+    for name, pattern in SECRET_PATTERNS.items():
+        text, count = pattern.subn(f"[REDACTED {name}]", text)  # subn returns the new text AND how many replacements it made
+        if count:
+            matched.append(name)
+    return text, matched
+
 
 AUDIT_LOG_PATH = Path(__file__).parent / "audit_log.jsonl"  # Next to agent.py, no matter where you run it from
 SESSION_ID = uuid.uuid4().hex[:8]  # Random ID shared by every log line from one run of the agent
@@ -278,6 +302,19 @@ def main():
                     except Exception as e:
                         is_error = True
                         result = f"Error: {type(e).__name__}: {e}"
+
+                    # GUARDRAIL G3: every path above leaves its output in `result`, so cleaning it here - before it's
+                    # logged or sent to Claude - covers every tool and every error message
+                    if guardrail_on("g3"):
+                        result, matches = redact_secrets(result)
+                        if matches:
+                            log_event(
+                                "guardrail_triggered",
+                                guardrail="g3",
+                                tool_use_id=tool_use_id,
+                                tool_name=tool_name,
+                                redacted_secrets=matches
+                            )
 
                     log_event(
                         "tool_call",
