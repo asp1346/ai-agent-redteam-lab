@@ -43,3 +43,16 @@ All guardrails are on by default. Turn them off to measure what each one stops:
 
 Switches last for one run. Each run prints what's disabled and records its
 configuration in `audit_log.jsonl`.
+
+## Running the tests
+
+```bash
+pip install -r requirements-dev.txt
+python -m pytest
+```
+
+The tests replace Claude with a scripted fake, so they make no API calls and
+need no API key. Each run happens in a throwaway copy of the project whose only
+secret is a fake one. The attack tests (`tests/test_attacks.py`) check which
+guardrails stop a read-then-send data theft attempt, with each guardrail on and
+off.
